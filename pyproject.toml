@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agi-brown-train"
+version = "0.1.0"
+description = "Collaborative JAX foundation-model research at Brown"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["jax>=0.4.38", "flax>=0.10.2"]
+
+[project.optional-dependencies]
+arc = ["arc-agi==0.9.9"]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/clubfm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["accelerator: requires compatible accelerator hardware"]
+
+[tool.ruff]
+line-length = 100
+indent-width = 2
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
