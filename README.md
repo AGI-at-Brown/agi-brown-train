@@ -15,8 +15,3 @@ uv sync --extra dev
 ```
 
 The base dependency uses JAX's default installation. Install a compatible accelerator if needed.
-
-## Architecture benchmarks
-
-[ARC-AGI-3 integration](benchmarks/arc_agi3/README.md) provides a bounded interactive
-runner with architecture-specific policies and an optional official SDK dependency.
