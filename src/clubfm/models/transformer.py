@@ -20,6 +20,7 @@ class Config:
   H: int = 32  # attention head dimension
   V: int = 12
   T: int = 11
+  rope_theta: float = 10000.0
 
 
 @struct.dataclass

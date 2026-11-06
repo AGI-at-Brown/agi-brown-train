@@ -7,7 +7,7 @@ import jax.numpy as jnp
 def rope(m, cfg):
   big_mat = jnp.zeros((cfg.H, cfg.H))
   for i in range(cfg.H // 2):
-    theta = jnp.power(10000.0, -2.0 * i / cfg.H)
+    theta = jnp.power(cfg.rope_theta, -2.0 * i / cfg.H)
     block = jnp.array(
       [[jnp.cos(m * theta), -jnp.sin(m * theta)], [jnp.sin(m * theta), jnp.cos(m * theta)]]
     )
