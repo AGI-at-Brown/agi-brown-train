@@ -1,4 +1,4 @@
-"""Two-projection GELU MLP from the notebook transformer."""
+"""All different MLP blocks should be in this file."""
 
 import jax
 import jax.numpy as jnp
