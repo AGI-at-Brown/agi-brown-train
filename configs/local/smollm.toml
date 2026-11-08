@@ -1,0 +1,74 @@
+# SmolLM2 1.7B
+
+[model]
+B = 4   # per data-parallel batch size
+L = 24
+D = 2048
+F = 8192
+N = 32
+K = 32
+H = 64
+V = 49152
+T = 2048
+rope_theta = 10000.0
+
+[architecture]
+name = "llama"
+hidden_act = "silu"         # swiglu
+tie_word_embeddings = true      # input embedding matrix is shared with output embedding matrix
+attention_bias = false
+mlp_bias = false
+attention_dropout = 0.0
+rms_norm_eps = 1.0e-5
+initializer_range = 0.02
+rope_interleaved = true
+dtype = "bfloat16"
+
+[training]
+seed = 42
+num_train_steps = 5240000
+micro_batch_size_per_device = 4
+gradient_accumulation_steps = 1
+# Derived: 256 replicas * 4 sequences * 1 accumulation step.
+global_batch_size = 1024
+# Derived: global_batch_size * model.T.
+tokens_per_step = 2097152
+# Token-budget training; no fixed epoch count.
+
+[optimizer]
+name = "adamw"
+learning_rate = 5.0e-4
+beta1 = 0.9
+beta2 = 0.95
+epsilon = 1.0e-8
+weight_decay = 0.01
+gradient_clip_norm = 1.0
+accumulate_grad_in_fp32 = true
+
+[schedule]
+name = "warmup_stable_decay"
+warmup_steps = 2000
+warmup_style = "linear"
+decay_start_step = 4716000
+decay_steps = 524000
+decay_style = "linear"
+min_learning_rate = 0.0
+
+[parallelism]
+data_parallel_size = 256
+tensor_parallel_size = 1
+pipeline_parallel_size = 1
+expert_parallel_size = 1
+activation_checkpointing = false
+zero_stage = 0
+
+[data]
+tokenizer = "HuggingFaceTB/cosmo2-tokenizer"
+dataset_path = "datasets/smollm2-corpus"
+seed = 8
+# The corpus path represents the prepared, staged pretraining data.
+# The tokenizer's training mixture is not the model's corpus mixture.
+
+[checkpointing]
+interval_steps = 2000
+directory = "checkpoints"

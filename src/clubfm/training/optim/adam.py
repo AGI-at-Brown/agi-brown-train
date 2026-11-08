@@ -25,7 +25,7 @@ def adam_update(params, grad, opt_state, lr, b1=0.9, b2=0.999, eps=1e-8):
   )
   return new_params, {"m": new_m, "v": new_v, "step": step}
 
-
+# the implementation in SmolLM2's paper
 def adamw_update(params, grad, opt_state, lr, b1=0.9, b2=0.95, eps=1e-8, weight_decay=0.01):
   step = opt_state["step"] + 1
   new_m = jax.tree.map(lambda m, g: b1 * m + (1 - b1) * g, opt_state["m"], grad)

@@ -3,6 +3,8 @@ Basic transformer implementation.
 """
 
 
+import tomllib
+
 import jax
 import jax.numpy as jnp
 from flax import struct
@@ -15,42 +17,35 @@ from clubfm.training.optim.adam import adam_init, adam_update
 
 @struct.dataclass
 class TrainConfig:
+  epochs: int
+  lr: float
+  vocab: dict[str, int]
+  num_train_steps: int
+  dataset_path: str
+  batch_size: int
+  weight_cfg: Config
   activation_sharding: P = P("data", None, None)
   weight_sharding: P = P(None, None)
-  epochs: int = 2
-  lr: float = 1e-4
-  vocab = {
-    "0": 0,
-    "1": 1,
-    "2": 2,
-    "3": 3,
-    "4": 4,
-    "5": 5,
-    "6": 6,
-    "7": 7,
-    "8": 8,
-    "9": 9,
-    "+": 10,
-    "=": 11,
-  }
-  vocab_size = len(vocab)
-  num_train_steps: int = 4000
-  dataset_path: str = "data_128000.txt"
-  batch_size: int = 32
-  weight_cfg: Config = Config()
+
+  @property
+  def vocab_size(self):
+    return len(self.vocab)
 
 
-def init_trainconfig(weight_cfg):
-  train_cfg = TrainConfig(
-    weight_cfg=weight_cfg,
+def load_trainconfig(path, *, tiny=False):
+  """Load explicit model and training settings from a TOML experiment file."""
+  with open(path, "rb") as f:
+    settings = tomllib.load(f)
+  model = settings["model"]
+  if tiny:
+    model = model | settings["tiny_model"]
+  weight_cfg = Config(**model)
+  return TrainConfig(
+    **settings["training"],
+    vocab=settings["vocab"],
     batch_size=weight_cfg.B,
+    weight_cfg=weight_cfg,
   )
-  return train_cfg
-
-
-def init_trainconfig_with_steps(weight_cfg, steps):
-  train_cfg = TrainConfig(weight_cfg=weight_cfg, batch_size=weight_cfg.B, num_train_steps=steps)
-  return train_cfg
 
 
 @struct.dataclass
