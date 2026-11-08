@@ -6,10 +6,13 @@ from flax import struct
 
 
 @struct.dataclass
-class DenseMLPParams:
+class BasicMLPParams:
   w1: jax.Array
   w2: jax.Array
 
+@struct.dataclass
+class DenseMLPParams:
+  layers: list[jax.Array]
 
 @struct.dataclass
 class SwiGLUMLPParams:
@@ -18,12 +21,18 @@ class SwiGLUMLPParams:
   w3: jax.Array
 
 
-def mlp_block(mlp, tokens, cfg):
+def mlp_block(mlp, tokens):
   first = jnp.einsum("btd,df->btf", tokens, mlp.w1)
   second = jax.nn.gelu(first)
   return jnp.einsum("btf,fd->btd", second, mlp.w2)
 
-def swiglu_block(mlp, tokens, cfg):
+def densemlp_block(mlp, tokens):
+  output = tokens
+  for layer in mlp.layers:
+    output = jax.nn.gelu(jnp.einsum("btd,df->btf", output, layer))
+  return output
+
+def swiglu_block(mlp, tokens):
   gate = jax.nn.silu(jnp.einsum("btd,df->btf", tokens, mlp.w1))
   up = jnp.einsum("btd,df->btf", tokens, mlp.w2)
   output = jnp.einsum("btf,fd->btd", gate * up, mlp.w3)
