@@ -13,6 +13,7 @@ dependencies = ["jax>=0.4.38", "flax>=0.10.2"]
 [project.optional-dependencies]
 arc = ["arc-agi==0.9.9"]
 dev = ["pytest>=8", "ruff>=0.9"]
+common-crawl = ["warcio>=1.7.4"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clubfm"]
