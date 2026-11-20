@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "Collaborative JAX foundation-model research at Brown"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["jax>=0.4.38", "flax>=0.10.2"]
+dependencies = [
+    "jax>=0.4.38",
+    "flax>=0.10.2",
+    "tensorboard>=2.21.0",
+    "xprof>=2.24.2",
+]
 
 [project.optional-dependencies]
 arc = ["arc-agi==0.9.9"]
