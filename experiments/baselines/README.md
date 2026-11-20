@@ -23,6 +23,12 @@ Generation is seeded and overwrites only its generated dataset file. A supplied
 file is read unchanged. The model initialization and batch sampler retain seed 0;
 `--seed` controls generated examples only.
 
+Model dimensions, training settings, and vocabulary live in
+`configs/local/transformer_addition.toml`. Pass `--config path/to/config.toml` to
+use another file. `Config` and `TrainConfig` require explicit values;
+`load_trainconfig(path)` builds both from TOML, and `.replace(...)` can override
+individual values in Python.
+
 ## Code map
 
 - `src/clubfm/models/transformer.py`: model configuration, parameter initialization, and forward assembly.

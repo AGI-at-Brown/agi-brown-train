@@ -11,15 +11,16 @@ from clubfm.modules.normalization import rmsnorm
 
 @struct.dataclass
 class Config:
-  B: int = 32
-  L: int = 4
-  D: int = 128
-  F: int = 512
-  N: int = 4  # number of q heads
-  K: int = 4  # number of kv heads
-  H: int = 32  # attention head dimension
-  V: int = 12
-  T: int = 11
+  B: int
+  L: int
+  D: int
+  F: int
+  N: int  # number of q heads
+  K: int  # number of kv heads
+  H: int  # attention head dimension
+  V: int
+  T: int
+  rope_theta: float
 
 
 @struct.dataclass
