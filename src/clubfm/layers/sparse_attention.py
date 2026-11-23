@@ -48,7 +48,7 @@ def compressed_indexer(
     q = partial_rope(q, query_positions, rope_theta, rotary_dim)
     k = partial_rope(k, key_positions, rope_theta, rotary_dim)
     block_ends = key_positions + block_size - 1
-    block_budget = (token_budget + block_size - 1) // block_size
+    block_budget = token_budget // block_size
     return _select_key_blocks(q, k, query_positions, block_ends, block_budget)
 
 # only for the indexer for sparse attention
@@ -63,7 +63,7 @@ def _select_key_blocks(q, k, query_positions, block_ends, block_budget):
     return jnp.where(selected_scores == -jnp.inf, -1, block_ids)
 
 
-def sparse_core_attention_block(sparse_core_attn, tokens, config, *, rotary_dim=64):
+def sparse_core_attention_block(sparse_core_attn, tokens, config, *, rotary_dim=64, key_mask=None):
   q = jnp.einsum("btd,dnh->btnh", tokens, sparse_core_attn.wq)
   k = jnp.einsum("bsd,dkh->bskh", tokens, sparse_core_attn.wk)
   v = jnp.einsum("bsd,dkh->bskh", tokens, sparse_core_attn.wv)
@@ -75,6 +75,44 @@ def sparse_core_attention_block(sparse_core_attn, tokens, config, *, rotary_dim=
   q = partial_rope(q, positions, config.rope_theta, rotary_dim)
   k = partial_rope(k, positions, config.rope_theta, rotary_dim)
 
-  qkv = grouped_query_attention(q, k, v)
+  if key_mask is None:
+    qkv = grouped_query_attention(q, k, v)
+  else:
+    causal = positions[:, None] >= positions[None, :]
+    mask = key_mask & causal
+    qkv = jax.nn.dot_product_attention(q, k, v, mask=mask[:, None, :, :])
+    qkv = jnp.where(mask.any(axis=-1)[..., None, None], qkv, 0)
   o = jnp.einsum("btnh,nhd->btd", qkv, sparse_core_attn.wo)
   return o
+
+
+@struct.dataclass
+class SparseAttentionParams:
+  indexer: CompressedIndexerParams
+  core: SparseCoreAttnParams
+
+
+def _selected_key_mask(block_ids, sequence, block_size):
+  """Select tokens from the picked complete blocks and the visible tail."""
+  batch = block_ids.shape[0]
+  num_blocks = (sequence + block_size - 1) // block_size
+  positions = jnp.arange(sequence)
+  # Use a discarded column for the indexer's unused slots.
+  indices = jnp.where(block_ids >= 0, block_ids, num_blocks)
+  selected = jnp.zeros((batch, sequence, num_blocks + 1), dtype=bool)
+  selected = selected.at[jnp.arange(batch)[:, None, None], positions[None, :, None], indices].set(True)
+  selected_keys = selected[..., :num_blocks][..., positions // block_size]
+  tail_start = ((positions + 1) // block_size) * block_size
+  visible_tail = (positions[None, :] >= tail_start[:, None]) & (positions[None, :] <= positions[:, None])
+  return selected_keys | visible_tail
+
+
+def sparse_attention_block(params, tokens, config, *, rotary_dim=64, block_size=4, token_budget=2048):
+  block_ids = compressed_indexer(
+    params.indexer, tokens, rope_theta=config.rope_theta, rotary_dim=rotary_dim,
+    block_size=block_size, token_budget=token_budget,
+  )
+  key_mask = _selected_key_mask(block_ids, tokens.shape[1], block_size)
+  return sparse_core_attention_block(
+    params.core, tokens, config, rotary_dim=rotary_dim, key_mask=key_mask,
+  )
