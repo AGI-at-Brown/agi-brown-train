@@ -1,4 +1,4 @@
-"""Qwen Flash Next text scaffold with hybrid attention and dense MLPs.
+"""Qwen Flash Next text scaffold with hybrid attention and optional MoE.
 Similar to https://huggingface.co/inference-optimization/Qwen3.8-Flash-Next-1.9B-A1.8B-small/blob/main/config.json#L95
 """
 
@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from flax import struct
 
 from clubfm.layers.gated_delta import GatedDeltaParams, gated_delta_block
+from clubfm.layers.moe import TopKMoEParams, init_topk_moe, topk_moe_block
 from clubfm.layers.sparse_attention import (
   CompressedIndexerParams,
   SparseAttentionParams,
@@ -42,6 +43,11 @@ class Config:
   indexer_compress_ratio: int = struct.field(pytree_node=False, default=4)
   indexer_budget: int = struct.field(pytree_node=False, default=2048)
   rotary_dim: int = struct.field(pytree_node=False, default=64)
+  num_experts: int = struct.field(pytree_node=False, default=0)
+  num_experts_per_tok: int = struct.field(pytree_node=False, default=1)
+  moe_intermediate_size: int = struct.field(pytree_node=False, default=0)
+  shared_expert_intermediate_size: int = struct.field(pytree_node=False, default=0)
+  norm_topk_prob: bool = struct.field(pytree_node=False, default=True)
 
 
 @struct.dataclass
@@ -53,7 +59,7 @@ class NgramParams:
 @struct.dataclass
 class Layer:
   attn: GatedDeltaParams | SparseAttentionParams
-  mlp: BasicMLPParams
+  mlp: BasicMLPParams | TopKMoEParams
 
 
 @struct.dataclass
@@ -66,6 +72,13 @@ class Transformer:
 def init_params(cfg, key=None):
   if key is None:
     key = jax.random.PRNGKey(0)
+  if cfg.num_experts < 0:
+    raise ValueError("num_experts must be nonnegative")
+  if cfg.num_experts:
+    if not 1 <= cfg.num_experts_per_tok <= cfg.num_experts:
+      raise ValueError("num_experts_per_tok must be between 1 and num_experts")
+    if min(cfg.moe_intermediate_size, cfg.shared_expert_intermediate_size) <= 0:
+      raise ValueError("MoE requires positive routed and shared expert widths")
   ngram = None
   if cfg.ngram_buckets_per_head < 0:
     raise ValueError("ngram_buckets_per_head must be nonnegative")
@@ -76,7 +89,8 @@ def init_params(cfg, key=None):
       )
     table_key, projection_key = jax.random.split(jax.random.fold_in(key, 1))
     ngram = NgramParams(
-      table=0.02 * jax.random.normal(
+      table=0.02
+      * jax.random.normal(
         table_key, (NGRAM_HEADS, cfg.ngram_buckets_per_head, cfg.D // NGRAM_HEADS)
       ),
       projection=jax.nn.initializers.lecun_normal()(projection_key, (cfg.D, cfg.D)),
@@ -134,11 +148,22 @@ def _init_layer(cfg, key, layer_index):
       norm_weight=jnp.zeros(value_dim),
       wo=weight(value_heads, value_dim, cfg.D),
     )
-  return Layer(attn=attn, mlp=BasicMLPParams(w1=weight(cfg.D, cfg.F), w2=weight(cfg.F, cfg.D)))
+  if cfg.num_experts:
+    mlp = init_topk_moe(
+      next(keys),
+      cfg.D,
+      cfg.num_experts,
+      cfg.moe_intermediate_size,
+      cfg.shared_expert_intermediate_size,
+    )
+  else:
+    mlp = BasicMLPParams(w1=weight(cfg.D, cfg.F), w2=weight(cfg.F, cfg.D))
+  return Layer(attn=attn, mlp=mlp)
 
 
-def forward(params, tokens, cfg):
+def forward(params, tokens, cfg, *, return_router_aux=False):
   x = embed_tokens(params.embed, tokens)
+  router_losses = []
 
   for layer_index, layer in enumerate(params.layers):
     if layer_index == 1 and params.ngram is not None:
@@ -149,11 +174,27 @@ def forward(params, tokens, cfg):
       x = x + gated_delta_block(layer.attn, normalized)
     else:
       x = x + sparse_attention_block(
-        layer.attn, normalized, cfg, rotary_dim=cfg.rotary_dim,
-        block_size=cfg.indexer_compress_ratio, token_budget=cfg.indexer_budget,
+        layer.attn,
+        normalized,
+        cfg,
+        rotary_dim=cfg.rotary_dim,
+        block_size=cfg.indexer_compress_ratio,
+        token_budget=cfg.indexer_budget,
       )
-    x = x + mlp_block(layer.mlp, x)
+    if isinstance(layer.mlp, TopKMoEParams):
+      feed_forward = topk_moe_block(
+        layer.mlp, x, cfg.num_experts_per_tok, cfg.norm_topk_prob, return_aux=return_router_aux
+      )
+      if return_router_aux:
+        feed_forward, router_loss = feed_forward
+        router_losses.append(router_loss)
+    else:
+      feed_forward = mlp_block(layer.mlp, x)
+    x = x + feed_forward
     x = rmsnorm(x, 1.0)
 
   logits = project_logits(params.embed, x)
-  return logits  # raw logits
+  if return_router_aux:
+    router_loss = jnp.mean(jnp.stack(router_losses)) if router_losses else jnp.float32(0)
+    return logits, router_loss
+  return logits

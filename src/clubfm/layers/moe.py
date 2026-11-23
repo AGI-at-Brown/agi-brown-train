@@ -1,10 +1,12 @@
-"""Chunked top-1 expert routing with optional expert-parallel all-to-all."""
+"""Mixture-of-experts feed-forward layers."""
 
 from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
 from flax import struct
+
+from clubfm.modules.mlp import SwiGLUMLPParams, swiglu_block
 
 
 @dataclass(frozen=True)
@@ -16,9 +18,10 @@ class MoEConfig:
 
 @struct.dataclass
 class MoEParams:
-  router: jax.Array   # [D, global_experts]
-  w1: jax.Array       # [num_local_experts, D, F]
-  w2: jax.Array       # [num_local_experts, F, D]
+  router: jax.Array  # [D, global_experts]
+  w1: jax.Array  # [num_local_experts, D, F]
+  w2: jax.Array  # [num_local_experts, F, D]
+
 
 # an efficient moe block
 # sorts by router probability
@@ -81,3 +84,69 @@ def moe_block(moe, tokens, cfg):
   sorted_outputs = outputs[destinations, slots]
   restored = jnp.zeros_like(sorted_outputs).at[order].set(sorted_outputs)
   return (restored * gates[:, None]).reshape(tokens.shape)
+
+
+@struct.dataclass
+class TopKMoEParams:
+  router: jax.Array  # [D, E]
+  experts: SwiGLUMLPParams  # Each projection has a leading expert axis.
+  shared: SwiGLUMLPParams
+
+
+def init_topk_moe(key, width, num_experts, expert_width, shared_width):
+  keys = jax.random.split(key, 7)
+  init = jax.nn.initializers.lecun_normal()
+  expert_init = jax.nn.initializers.lecun_normal(batch_axis=0)
+  return TopKMoEParams(
+    router=init(keys[0], (width, num_experts)),
+    experts=SwiGLUMLPParams(
+      w1=expert_init(keys[1], (num_experts, width, expert_width)),
+      w2=expert_init(keys[2], (num_experts, width, expert_width)),
+      w3=expert_init(keys[3], (num_experts, expert_width, width)),
+    ),
+    shared=SwiGLUMLPParams(
+      w1=init(keys[4], (width, shared_width)),
+      w2=init(keys[5], (width, shared_width)),
+      w3=init(keys[6], (shared_width, width)),
+    ),
+  )
+
+
+def topk_moe_block(params, tokens, top_k, normalize_weights, *, return_aux=False):
+  """Apply single-device top-k routing to tokens of shape [batch, time, width]."""
+  num_experts = params.router.shape[-1]
+  if not 1 <= top_k <= num_experts:
+    raise ValueError("top_k must be between 1 and the number of experts")
+
+  flat = tokens.reshape(-1, tokens.shape[-1])
+  logits = jnp.matmul(flat, params.router, preferred_element_type=jnp.float32)
+  probabilities = jax.nn.softmax(logits, axis=-1)
+  selected_logits, expert_ids = jax.lax.top_k(logits, top_k)
+  if normalize_weights:
+    weights = jax.nn.softmax(selected_logits, axis=-1)
+  else:
+    weights = jnp.take_along_axis(probabilities, expert_ids, axis=-1)
+
+  # Gather only selected weights, one token at a time, to bound temporary memory.
+  def apply_experts(inputs):
+    token, ids, gates = inputs
+    experts = jax.tree.map(lambda weights: weights[ids], params.experts)
+    hidden = jax.nn.silu(jnp.einsum("d,kdf->kf", token, experts.w1))
+    hidden *= jnp.einsum("d,kdf->kf", token, experts.w2)
+    outputs = jnp.einsum("kf,kfd->kd", hidden, experts.w3)
+    return jnp.sum(outputs * gates[:, None], axis=0).astype(outputs.dtype)
+
+  # Recompute the gathered weights in backward instead of retaining them for every token.
+  routed = jax.lax.map(jax.checkpoint(apply_experts), (flat, expert_ids, weights))
+  output = routed.reshape(tokens.shape) + swiglu_block(params.shared, tokens)
+  if not return_aux:
+    return output
+
+  # extra stats return path
+
+  # A uniform router has a load-balancing loss of one for any top-k.
+  counts = jnp.bincount(expert_ids.reshape(-1), length=num_experts)
+  fractions = counts / max(expert_ids.size, 1)
+  mean_probabilities = probabilities.sum(axis=0) / max(flat.shape[0], 1)
+  aux_loss = num_experts * jnp.sum(fractions * mean_probabilities)
+  return output, aux_loss

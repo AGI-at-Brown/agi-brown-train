@@ -2,7 +2,6 @@
 Basic transformer implementation.
 """
 
-
 from __future__ import annotations
 
 import tomllib
@@ -14,7 +13,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import struct
-from jax.sharding import NamedSharding, PartitionSpec as P
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 
 from clubfm.models import qwen_flash_next, transformer
 from clubfm.modules.loss import cross_entropy
@@ -42,6 +42,7 @@ class TrainConfig:
   activation_sharding: P = P("data", None, None)
   weight_sharding: P = P(None, None)
   tokenizer: Tokenizer | None = struct.field(pytree_node=False, default=None)
+  router_aux_loss_coef: float = 0.001
 
   @property
   def vocab_size(self):
@@ -113,14 +114,28 @@ def model_apply(train_cfg, params, tokens):
 
 
 def train_step(train_cfg, train_state, batch):
-  def loss_fn(params):
-    logits = model_apply(train_cfg, params, batch["observed_ids"])
-    return cross_entropy(logits, batch["target_ids"])
+  cfg = train_cfg.weight_cfg
+  use_moe = isinstance(cfg, qwen_flash_next.Config) and cfg.num_experts > 0
 
-  loss, grad = jax.value_and_grad(loss_fn)(train_state.params)
+  def loss_fn(params):
+    tokens = batch["observed_ids"]
+    if use_moe:
+      logits, router_loss = qwen_flash_next.forward(params, tokens, cfg, return_router_aux=True)
+    else:
+      logits = model_apply(train_cfg, params, tokens)
+      router_loss = jnp.float32(0)
+    token_loss = cross_entropy(logits, batch["target_ids"])
+    loss = token_loss + train_cfg.router_aux_loss_coef * router_loss if use_moe else token_loss
+    return loss, (token_loss, router_loss)
+
+  (loss, (token_loss, router_loss)), grad = jax.value_and_grad(loss_fn, has_aux=True)(
+    train_state.params
+  )
   new_params, new_opt = adam_update(train_state.params, grad, train_state.opt, train_cfg.lr)
   new_train_state = train_state.replace(params=new_params, opt=new_opt)
   metrics = {"train_loss": loss}
+  if use_moe:
+    metrics.update(cross_entropy=token_loss, router_aux_loss=router_loss)
   return new_train_state, metrics
 
 
@@ -152,7 +167,10 @@ def _tokenized_batches(train_cfg, lines):
       raise ValueError("Dataset is empty")
 
     tokens = np.memmap(
-      token_file, dtype=np.int32, mode="r", shape=(n_examples, sequence_length),
+      token_file,
+      dtype=np.int32,
+      mode="r",
+      shape=(n_examples, sequence_length),
     )
     yield from _sample_batches(train_cfg, tokens)
 
@@ -192,7 +210,9 @@ def train_loop(train_cfg, *, mesh=None):
     replicated = NamedSharding(mesh, P())
     batch_sharding = logical_to_sharding(P("batch"), mesh, DATA_PARALLEL)
     step_fn = jax.jit(
-      step, in_shardings=(replicated, batch_sharding), out_shardings=(replicated, replicated),
+      step,
+      in_shardings=(replicated, batch_sharding),
+      out_shardings=(replicated, replicated),
     )
   batch = iter(get_dataset(train_cfg))
   for step in range(train_cfg.num_train_steps):
