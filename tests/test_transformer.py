@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from clubfm.models.transformer import Config, forward, init_params
-from clubfm.training.trainer import init_train_state, load_trainconfig, train_step
+from clubfm.training.trainer import TrainConfig, init_train_state, load_trainconfig, train_step
 
 
 def test_causal_grouped_query_forward_and_gradients():
@@ -28,6 +28,37 @@ def test_causal_grouped_query_forward_and_gradients():
   assert int(updated.opt["step"]) == 1
   assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(updated.params))
   assert not np.array_equal(state.params.embed, updated.params.embed)
+
+
+def test_ngram_embeddings_update_in_jitted_train_step():
+  cfg = Config(B=1, L=2, D=16, F=32, N=2, K=1, H=8, V=12, T=4, rope_theta=10000.0)
+  baseline = init_params(cfg)
+  assert baseline.ngram is None
+
+  cfg = cfg.replace(ngram_buckets_per_head=127)
+  state = init_train_state(cfg)
+  assert state.params.ngram is not None
+  np.testing.assert_array_equal(state.params.embed, baseline.embed)
+  for actual, expected in zip(
+    jax.tree.leaves(state.params.layers), jax.tree.leaves(baseline.layers), strict=True
+  ):
+    np.testing.assert_array_equal(actual, expected)
+
+  train_cfg = TrainConfig(
+    epochs=1, lr=0.001, vocab={}, num_train_steps=1, dataset_path="", batch_size=1, weight_cfg=cfg
+  )
+  batch = {
+    "observed_ids": jnp.array([[0, 1, 2, 3]]),
+    "target_ids": jnp.array([[1, 2, 3, 4]]),
+  }
+  updated, metrics = jax.jit(lambda state: train_step(train_cfg, state, batch))(state)
+  assert bool(jnp.isfinite(metrics["train_loss"]))
+  assert int(updated.opt["step"]) == 1
+  for name in ("table", "projection"):
+    before = getattr(state.params.ngram, name)
+    after = getattr(updated.params.ngram, name)
+    assert bool(jnp.all(jnp.isfinite(after))), name
+    assert not np.array_equal(before, after), name
 
 
 def test_config_file_and_tiny_overrides(tmp_path):
