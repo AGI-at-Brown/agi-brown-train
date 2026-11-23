@@ -11,7 +11,9 @@ requires-python = ">=3.12"
 dependencies = [
     "jax>=0.4.38",
     "flax>=0.10.2",
+    "huggingface-hub>=0.16.4",
     "tensorboard>=2.21.0",
+    "tokenizers>=0.20",
     "xprof>=2.24.2",
 ]
 

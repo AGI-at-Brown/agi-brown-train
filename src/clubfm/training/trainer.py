@@ -3,10 +3,16 @@ Basic transformer implementation.
 """
 
 
+from __future__ import annotations
+
 import tomllib
+from itertools import batched
+from tempfile import TemporaryFile
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import struct
 from jax.sharding import PartitionSpec as P
 
@@ -14,22 +20,28 @@ from clubfm.models.transformer import Config, Transformer, forward, init_params
 from clubfm.modules.loss import cross_entropy
 from clubfm.training.optim.adam import adam_init, adam_update
 
+if TYPE_CHECKING:
+  from tokenizers import Tokenizer
+
 
 @struct.dataclass
 class TrainConfig:
   epochs: int
   lr: float
-  vocab: dict[str, int]
+  vocab: dict[str, int] | None
   num_train_steps: int
   dataset_path: str
   batch_size: int
   weight_cfg: Config
   activation_sharding: P = P("data", None, None)
   weight_sharding: P = P(None, None)
+  tokenizer: Tokenizer | None = struct.field(pytree_node=False, default=None)
 
   @property
   def vocab_size(self):
-    return len(self.vocab)
+    if self.tokenizer is not None:
+      return self.tokenizer.get_vocab_size()
+    return len(self.vocab or {})
 
 
 def load_trainconfig(path, *, tiny=False):
@@ -40,9 +52,22 @@ def load_trainconfig(path, *, tiny=False):
   if tiny:
     model = model | settings["tiny_model"]
   weight_cfg = Config(**model)
+  tokenizer = None
+  vocab = settings.get("vocab")
+  tokenizer_id = settings.get("data", {}).get("tokenizer")
+  if tokenizer_id is not None:
+    from clubfm.data.tokenization.cosmo2 import COSMO2_TOKENIZER_ID, load_cosmo2_tokenizer
+
+    if tokenizer_id != COSMO2_TOKENIZER_ID:
+      raise ValueError(f"Unsupported tokenizer: {tokenizer_id}")
+    tokenizer = load_cosmo2_tokenizer()
+  elif vocab is None:
+    raise ValueError("Configure [data].tokenizer or provide a [vocab] table")
+
   return TrainConfig(
     **settings["training"],
-    vocab=settings["vocab"],
+    vocab=vocab,
+    tokenizer=tokenizer,
     batch_size=weight_cfg.B,
     weight_cfg=weight_cfg,
   )
@@ -81,21 +106,54 @@ def train_step(train_cfg, train_state, batch):
   return new_train_state, metrics
 
 
+def _sample_batches(train_cfg, tokens):
+  key = jax.random.PRNGKey(0)
+  for _ in range(train_cfg.num_train_steps):
+    key, sample_key = jax.random.split(key)
+    indices = jax.random.randint(sample_key, (train_cfg.batch_size,), 0, len(tokens))
+    batch = jnp.asarray(tokens[np.asarray(indices)])
+    yield {"observed_ids": batch[:, :-1], "target_ids": batch[:, 1:]}
+
+
+def _tokenized_batches(train_cfg, lines):
+  tokenizer = train_cfg.tokenizer
+  sequence_length = train_cfg.weight_cfg.T + 1
+  if train_cfg.weight_cfg.V < train_cfg.vocab_size:
+    raise ValueError("Model V must cover the tokenizer vocabulary")
+
+  # Spool token IDs to disk so random sampling only loads the selected rows.
+  with TemporaryFile() as token_file:
+    n_examples = 0
+    for texts in batched(lines, 1024):
+      rows = [row.ids for row in tokenizer.encode_batch(list(texts), add_special_tokens=False)]
+      if any(len(row) != sequence_length for row in rows):
+        raise ValueError("Each example must have T + 1 tokens after tokenization")
+      np.asarray(rows, dtype=np.int32).tofile(token_file)
+      n_examples += len(rows)
+    if not n_examples:
+      raise ValueError("Dataset is empty")
+
+    tokens = np.memmap(
+      token_file, dtype=np.int32, mode="r", shape=(n_examples, sequence_length),
+    )
+    yield from _sample_batches(train_cfg, tokens)
+
+
 def get_dataset(train_cfg):
   with open(train_cfg.dataset_path) as f:
-    lines = [line.strip() for line in f.readlines()]
+    if train_cfg.tokenizer is not None:
+      yield from _tokenized_batches(train_cfg, (line.rstrip("\n") for line in f))
+      return
+    lines = [line.strip() for line in f]
 
   if not lines:
     raise ValueError("Dataset is empty")
+  if train_cfg.vocab is None:
+    raise ValueError("A tokenizer or character vocabulary is required")
   if any(len(line) != train_cfg.weight_cfg.T + 1 for line in lines):
     raise ValueError("Each example must have T + 1 characters")
-  tokens = jnp.array([encode(line, train_cfg.vocab) for line in lines])
-  n_examples = tokens.shape[0]
-  keys = jax.random.split(jax.random.PRNGKey(0), train_cfg.num_train_steps)
-  for step in range(train_cfg.num_train_steps):
-    idx = jax.random.randint(keys[step], (train_cfg.batch_size,), 0, n_examples)
-    batch = tokens[idx]
-    yield {"observed_ids": batch[:, :-1], "target_ids": batch[:, 1:]}
+  tokens = np.asarray([encode(line, train_cfg.vocab) for line in lines], dtype=np.int32)
+  yield from _sample_batches(train_cfg, tokens)
 
 
 def train_loop(train_cfg):

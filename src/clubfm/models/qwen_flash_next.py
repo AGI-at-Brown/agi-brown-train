@@ -1,4 +1,6 @@
-"""Qwen Flash Next text scaffold with hybrid attention and dense MLPs."""
+"""Qwen Flash Next text scaffold with hybrid attention and dense MLPs.
+Similar to https://huggingface.co/inference-optimization/Qwen3.8-Flash-Next-1.9B-A1.8B-small/blob/main/config.json#L95
+"""
 
 import jax
 import jax.numpy as jnp
