@@ -6,6 +6,7 @@
 #SBATCH --mem=16G
 #SBATCH --time=12:00:00
 #SBATCH --output=slurm-%x-%j.out
+#SBATCH --error=slurm-%x-%j.err
 
 set -euo pipefail
 

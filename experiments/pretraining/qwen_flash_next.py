@@ -45,9 +45,12 @@ def main():
   parser.add_argument("--checkpoint-every", type=int, default=1000)
   parser.add_argument("--tiny", action="store_true")
   parser.add_argument("--num-devices", type=int, default=1)
+  parser.add_argument("--batch-size-per-device", type=int, help="Override the model's B setting")
   args = parser.parse_args()
   if args.steps is not None and args.steps <= 0:
     parser.error("--steps must be positive")
+  if args.batch_size_per_device is not None and args.batch_size_per_device <= 0:
+    parser.error("--batch-size-per-device must be positive")
 
   if args.checkpoint_every <= 0:
     parser.error("--checkpoint-every must be positive")
@@ -69,7 +72,8 @@ def main():
   if args.steps is not None:
     cfg = cfg.replace(num_train_steps=args.steps)
 
-  cfg = cfg.replace(batch_size=cfg.batch_size * args.num_devices)
+  batch_size_per_device = args.batch_size_per_device or cfg.batch_size
+  cfg = cfg.replace(batch_size=batch_size_per_device * args.num_devices)
   latest = args.output.with_suffix(".latest" + args.output.suffix)
 
   def checkpoint_periodically(step, state):
