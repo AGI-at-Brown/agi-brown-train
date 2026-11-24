@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=qwen-flash-next
-#SBATCH --partition=gpu
+#SBATCH --partition=gpu-he
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G

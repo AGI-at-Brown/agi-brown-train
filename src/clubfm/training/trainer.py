@@ -174,7 +174,7 @@ def get_dataset(train_cfg):
   yield from _sample_batches(train_cfg, tokens)
 
 
-def train_loop(train_cfg, *, mesh=None):
+def train_loop(train_cfg, *, mesh=None, batches=None, on_step=None, log_every=1):
   if train_cfg.num_train_steps <= 0:
     raise ValueError("num_train_steps must be positive")
   if mesh is not None and train_cfg.batch_size % mesh.shape["data"]:
@@ -194,11 +194,17 @@ def train_loop(train_cfg, *, mesh=None):
     step_fn = jax.jit(
       step, in_shardings=(replicated, batch_sharding), out_shardings=(replicated, replicated),
     )
-  batch = iter(get_dataset(train_cfg))
-  for step in range(train_cfg.num_train_steps):
-    examples = next(batch)
+  if batches is None:
+    batches = get_dataset(train_cfg)
+  metrics = None
+  for step_number, examples in enumerate(batches, start=1):
     if mesh is not None:
       examples = shard_batch(examples, mesh)
     train_state, metrics = step_fn(train_state, examples)
-    jax.debug.print("metrics {}", metrics)
+    if step_number == 1 or step_number % log_every == 0:
+      print(f"step {step_number} loss {float(metrics['train_loss']):.6f}", flush=True)
+    if on_step is not None:
+      on_step(step_number, train_state)
+  if metrics is None:
+    raise ValueError("Dataset did not produce a complete training batch")
   return train_state, metrics
