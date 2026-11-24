@@ -15,4 +15,4 @@ export JAX_PLATFORMS=cuda,cpu
 export RAYON_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 
 uv run --with 'jax[cuda12]' python -m experiments.pretraining.qwen_flash_next \
-  --num-devices 4 --output "artifacts/qwen_flash_next/${SLURM_JOB_ID}.msgpack" "$@"
+  --num-devices 4 --output "artifacts/qwen_flash_next/${SLURM_JOB_ID}.msgpack" "$@" --common-crawl
