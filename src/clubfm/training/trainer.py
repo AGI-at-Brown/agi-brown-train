@@ -192,12 +192,13 @@ def get_dataset(train_cfg):
   yield from _sample_batches(train_cfg, tokens)
 
 
-def train_loop(train_cfg, *, mesh=None, batches=None, on_step=None, log_every=1):
+def train_loop(train_cfg, *, mesh=None, batches=None, on_step=None, log_every=1, on_log=None):
   if train_cfg.num_train_steps <= 0:
     raise ValueError("num_train_steps must be positive")
   if mesh is not None and train_cfg.batch_size % mesh.shape["data"]:
     raise ValueError("Global batch size must be divisible by the data mesh size")
 
+  print("Initializing model and optimizer", flush=True)
   train_state = init_train_state(train_cfg.weight_cfg)
 
   def step(state, batch):
@@ -217,12 +218,18 @@ def train_loop(train_cfg, *, mesh=None, batches=None, on_step=None, log_every=1)
   if batches is None:
     batches = get_dataset(train_cfg)
   metrics = None
+  print("Waiting for the first training batch", flush=True)
   for step_number, examples in enumerate(batches, start=1):
+    if step_number == 1:
+      print("First batch ready. Compiling and running the first training step", flush=True)
     if mesh is not None:
       examples = shard_batch(examples, mesh)
     train_state, metrics = step_fn(train_state, examples)
     if step_number == 1 or step_number % log_every == 0:
-      print(f"step {step_number} loss {float(metrics['train_loss']):.6f}", flush=True)
+      loss = float(metrics["train_loss"])
+      print(f"step {step_number} loss {loss:.6f}", flush=True)
+      if on_log is not None:
+        on_log(step_number, loss)
     if on_step is not None:
       on_step(step_number, train_state)
   if metrics is None:
