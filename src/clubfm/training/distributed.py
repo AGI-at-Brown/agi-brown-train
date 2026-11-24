@@ -3,10 +3,34 @@ GPU parallelism on any number of nodes and GPUs.
 
 be sure to set CUDA_VISIBLE_DEVICES before calling initialize_gpu().
 """
+from typing import NamedTuple
+
 import jax
 import numpy as np
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
+
+
+class ShardingRules(NamedTuple):
+  batch: str | None = None
+  sequence: str | None = None
+  d_model: str | None = None
+  d_ff: str | None = None
+  vocab: str | None = None
+
+
+DATA_PARALLEL = ShardingRules(batch="data")
+FSDP = ShardingRules(batch="x", d_model="x")
+MODEL_PARALLEL = ShardingRules(d_ff="x")
+
+
+def logical_to_physical(logical: P, rules: ShardingRules) -> P:
+  """Map logical dimensions to mesh axes."""
+  return P(*(getattr(rules, axis) if axis is not None else None for axis in logical))
+
+
+def logical_to_sharding(logical: P, mesh: Mesh, rules: ShardingRules) -> NamedSharding:
+  return NamedSharding(mesh, logical_to_physical(logical, rules))
 
 
 def initialize_gpu(num_processes=1, process_id=0, coordinator_address=None, local_device_ids=None):
@@ -35,7 +59,7 @@ def create_gpu_mesh():
 
 
 def shard_batch(local_batch, mesh):
-  sharding = NamedSharding(mesh, P("data"))
+  sharding = logical_to_sharding(P("batch"), mesh, DATA_PARALLEL)
   return jax.tree.map(
     lambda x: jax.make_array_from_process_local_data(sharding, np.asarray(x)),
     local_batch,

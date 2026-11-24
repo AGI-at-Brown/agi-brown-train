@@ -1,0 +1,48 @@
+[architecture]
+name = "qwen_flash_next"
+
+[model]
+B = 2
+L = 8
+D = 256
+F = 1024
+N = 8
+K = 2
+H = 32
+V = 49152
+T = 512
+rope_theta = 10000.0
+eos_token_id = 0
+linear_num_key_heads = 4
+linear_num_value_heads = 8
+linear_key_head_dim = 32
+linear_value_head_dim = 32
+indexer_head_dim = 32
+indexer_budget = 128
+rotary_dim = 32
+
+[tiny_model]
+B = 1
+L = 4
+D = 32
+F = 64
+N = 4
+K = 2
+H = 8
+T = 8
+linear_num_key_heads = 2
+linear_num_value_heads = 4
+linear_key_head_dim = 8
+linear_value_head_dim = 8
+indexer_n_heads = 2
+indexer_head_dim = 8
+rotary_dim = 8
+
+[training]
+epochs = 1
+lr = 0.0003
+num_train_steps = 1000
+dataset_path = ""
+
+[data]
+tokenizer = "HuggingFaceTB/cosmo2-tokenizer"

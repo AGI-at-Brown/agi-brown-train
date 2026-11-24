@@ -14,10 +14,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import struct
-from jax.sharding import PartitionSpec as P
+from jax.sharding import NamedSharding, PartitionSpec as P
 
-from clubfm.models.transformer import Config, Transformer, forward, init_params
+from clubfm.models import qwen_flash_next, transformer
 from clubfm.modules.loss import cross_entropy
+from clubfm.training.distributed import (
+  DATA_PARALLEL,
+  logical_to_sharding,
+  replicate_state,
+  shard_batch,
+)
 from clubfm.training.optim.adam import adam_init, adam_update
 
 if TYPE_CHECKING:
@@ -32,7 +38,7 @@ class TrainConfig:
   num_train_steps: int
   dataset_path: str
   batch_size: int
-  weight_cfg: Config
+  weight_cfg: transformer.Config | qwen_flash_next.Config
   activation_sharding: P = P("data", None, None)
   weight_sharding: P = P(None, None)
   tokenizer: Tokenizer | None = struct.field(pytree_node=False, default=None)
@@ -51,7 +57,13 @@ def load_trainconfig(path, *, tiny=False):
   model = settings["model"]
   if tiny:
     model = model | settings["tiny_model"]
-  weight_cfg = Config(**model)
+  architecture = settings.get("architecture", {}).get("name", "transformer")
+  if architecture == "qwen_flash_next":
+    weight_cfg = qwen_flash_next.Config(**model)
+  elif architecture == "transformer":
+    weight_cfg = transformer.Config(**model)
+  else:
+    raise ValueError(f"Unsupported training architecture: {architecture}")
   tokenizer = None
   vocab = settings.get("vocab")
   tokenizer_id = settings.get("data", {}).get("tokenizer")
@@ -75,13 +87,19 @@ def load_trainconfig(path, *, tiny=False):
 
 @struct.dataclass
 class TrainState:
-  weight_cfg: Config = struct.field(pytree_node=False)
-  params: Transformer
+  weight_cfg: transformer.Config | qwen_flash_next.Config = struct.field(pytree_node=False)
+  params: transformer.Transformer | qwen_flash_next.Transformer
   opt: dict
 
 
+def _model_module(weight_cfg):
+  if isinstance(weight_cfg, qwen_flash_next.Config):
+    return qwen_flash_next
+  return transformer
+
+
 def init_train_state(weight_cfg):
-  params = init_params(weight_cfg)
+  params = _model_module(weight_cfg).init_params(weight_cfg)
   opt = adam_init(params)
   return TrainState(weight_cfg=weight_cfg, params=params, opt=opt)
 
@@ -91,7 +109,7 @@ def encode(s, vocab):
 
 
 def model_apply(train_cfg, params, tokens):
-  return forward(params, tokens, train_cfg.weight_cfg)
+  return _model_module(train_cfg.weight_cfg).forward(params, tokens, train_cfg.weight_cfg)
 
 
 def train_step(train_cfg, train_state, batch):
@@ -156,13 +174,31 @@ def get_dataset(train_cfg):
   yield from _sample_batches(train_cfg, tokens)
 
 
-def train_loop(train_cfg):
+def train_loop(train_cfg, *, mesh=None):
   if train_cfg.num_train_steps <= 0:
     raise ValueError("num_train_steps must be positive")
+  if mesh is not None and train_cfg.batch_size % mesh.shape["data"]:
+    raise ValueError("Global batch size must be divisible by the data mesh size")
+
   train_state = init_train_state(train_cfg.weight_cfg)
-  step_fn = jax.jit(lambda state, batch: train_step(train_cfg, state, batch))
+
+  def step(state, batch):
+    return train_step(train_cfg, state, batch)
+
+  if mesh is None:
+    step_fn = jax.jit(step)
+  else:
+    train_state = replicate_state(train_state, mesh)
+    replicated = NamedSharding(mesh, P())
+    batch_sharding = logical_to_sharding(P("batch"), mesh, DATA_PARALLEL)
+    step_fn = jax.jit(
+      step, in_shardings=(replicated, batch_sharding), out_shardings=(replicated, replicated),
+    )
   batch = iter(get_dataset(train_cfg))
   for step in range(train_cfg.num_train_steps):
-    train_state, metrics = step_fn(train_state, next(batch))
+    examples = next(batch)
+    if mesh is not None:
+      examples = shard_batch(examples, mesh)
+    train_state, metrics = step_fn(train_state, examples)
     jax.debug.print("metrics {}", metrics)
   return train_state, metrics
