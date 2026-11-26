@@ -182,18 +182,26 @@ def forward(params, tokens, cfg, *, return_router_aux=False):
         block_size=cfg.indexer_compress_ratio,
         token_budget=cfg.indexer_budget,
       )
+    # Pre-norm feed-forward. Without it, the SwiGLU output grows with the raw residual scale.
+    normalized = rmsnorm(x, 1.0)
     if isinstance(layer.mlp, TopKMoEParams):
       feed_forward = topk_moe_block(
-        layer.mlp, x, cfg.num_experts_per_tok, cfg.norm_topk_prob, return_aux=return_router_aux
+        layer.mlp,
+        normalized,
+        cfg.num_experts_per_tok,
+        cfg.norm_topk_prob,
+        return_aux=return_router_aux,
       )
       if return_router_aux:
         feed_forward, router_loss = feed_forward
         router_losses.append(router_loss)
     else:
-      feed_forward = mlp_block(layer.mlp, x)
+      feed_forward = mlp_block(layer.mlp, normalized)
     x = x + feed_forward
-    x = rmsnorm(x, 1.0)
 
+  # Normalize once at the end. Renormalizing after every layer let the last feed-forward
+  # overwrite the stream with one constant vector, so training stalled at unigram loss.
+  x = rmsnorm(x, 1.0)
   logits = project_logits(params.embed, x)
   if return_router_aux:
     router_loss = jnp.mean(jnp.stack(router_losses)) if router_losses else jnp.float32(0)

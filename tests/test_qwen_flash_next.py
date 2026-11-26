@@ -2,14 +2,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from clubfm.layers.gated_delta import GatedDeltaParams
-from clubfm.layers.sparse_attention import SparseAttentionParams
-from clubfm.models.qwen_flash_next import Config
+from clubfm.layers.gated_delta import GatedDeltaParams, gated_delta_block
+from clubfm.layers.moe import topk_moe_block
+from clubfm.layers.sparse_attention import SparseAttentionParams, sparse_attention_block
+from clubfm.models.qwen_flash_next import Config, forward, init_params
+from clubfm.modules.embedding import embed_tokens, project_logits
+from clubfm.modules.normalization import rmsnorm
 from clubfm.training.trainer import TrainConfig, init_train_state, model_apply, train_step
 
 
-def test_hybrid_qwen_moe_updates_in_jitted_train_step():
-  cfg = Config(
+def _tiny_config():
+  return Config(
     B=1,
     L=4,
     D=16,
@@ -34,6 +37,40 @@ def test_hybrid_qwen_moe_updates_in_jitted_train_step():
     moe_intermediate_size=8,
     shared_expert_intermediate_size=8,
   )
+
+
+def test_forward_uses_pre_norm_residual_layout():
+  # Both mixers and feed-forwards read a normalized copy of the residual, which is only
+  # normalized once more before the output projection. Renormalizing the residual after every
+  # layer let the last MoE overwrite it with a constant, stalling training at unigram loss.
+  cfg = _tiny_config().replace(ngram_buckets_per_head=0)
+  params = init_params(cfg, jax.random.key(3))
+  tokens = jax.random.randint(jax.random.key(4), (2, cfg.T), 0, cfg.V)
+
+  x = embed_tokens(params.embed, tokens)
+  for layer in params.layers:
+    normalized = rmsnorm(x, 1.0)
+    if isinstance(layer.attn, GatedDeltaParams):
+      x = x + gated_delta_block(layer.attn, normalized)
+    else:
+      x = x + sparse_attention_block(
+        layer.attn,
+        normalized,
+        cfg,
+        rotary_dim=cfg.rotary_dim,
+        block_size=cfg.indexer_compress_ratio,
+        token_budget=cfg.indexer_budget,
+      )
+    x = x + topk_moe_block(
+      layer.mlp, rmsnorm(x, 1.0), cfg.num_experts_per_tok, cfg.norm_topk_prob
+    )
+  expected = project_logits(params.embed, rmsnorm(x, 1.0))
+
+  np.testing.assert_allclose(forward(params, tokens, cfg), expected, atol=1e-5, rtol=1e-5)
+
+
+def test_hybrid_qwen_moe_updates_in_jitted_train_step():
+  cfg = _tiny_config()
   train_cfg = TrainConfig(
     epochs=1, lr=0.001, vocab={}, num_train_steps=1, dataset_path="", batch_size=1, weight_cfg=cfg
   )
