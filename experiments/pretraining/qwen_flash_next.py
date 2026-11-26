@@ -1,4 +1,4 @@
-"""Train Qwen Flash Next on fixed-length, line-delimited text."""
+"""Train Qwen Flash Next on local text or Parquet, or stream Common Crawl."""
 
 import argparse
 import logging
@@ -40,7 +40,9 @@ def main():
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--config", type=Path, default=Path("configs/cluster/qwen_flash_next.toml"))
   source = parser.add_mutually_exclusive_group()
-  source.add_argument("--dataset-path", type=Path)
+  source.add_argument(
+    "--dataset-path", type=Path, help="Fixed-length text file or Parquet shard with a text column"
+  )
   source.add_argument("--common-crawl", action="store_true")
   parser.add_argument("--crawl", default=DEFAULT_CRAWL)
   parser.add_argument("--crawl-bytes", type=int, default=DEFAULT_MAX_BYTES)
