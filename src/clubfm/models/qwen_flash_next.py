@@ -99,7 +99,8 @@ def init_params(cfg, key=None):
   layer_keys = jax.random.split(key, cfg.L + 1)
   return Transformer(
     layers=[_init_layer(cfg, layer_key, i) for i, layer_key in enumerate(layer_keys[:-1])],
-    embed=jax.random.normal(layer_keys[-1], (cfg.V, cfg.D)),
+    # Small init keeps the tied output logits near uniform, so the initial loss is ~ln(V).
+    embed=0.02 * jax.random.normal(layer_keys[-1], (cfg.V, cfg.D)),
     ngram=ngram,
   )
 

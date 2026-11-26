@@ -127,17 +127,19 @@ def topk_moe_block(params, tokens, top_k, normalize_weights, *, return_aux=False
   else:
     weights = jnp.take_along_axis(probabilities, expert_ids, axis=-1)
 
-  # Gather only selected weights, one token at a time, to bound temporary memory.
-  def apply_experts(inputs):
-    token, ids, gates = inputs
-    experts = jax.tree.map(lambda weights: weights[ids], params.experts)
-    hidden = jax.nn.silu(jnp.einsum("d,kdf->kf", token, experts.w1))
-    hidden *= jnp.einsum("d,kdf->kf", token, experts.w2)
-    outputs = jnp.einsum("kf,kfd->kd", hidden, experts.w3)
-    return jnp.sum(outputs * gates[:, None], axis=0).astype(outputs.dtype)
-
-  # Recompute the gathered weights in backward instead of retaining them for every token.
-  routed = jax.lax.map(jax.checkpoint(apply_experts), (flat, expert_ids, weights))
+  # Sort (token, expert) assignments by expert so each expert runs one grouped matmul over
+  # its own tokens. Work scales with top_k, not with the number of experts.
+  assignments = expert_ids.reshape(-1)
+  order = jnp.argsort(assignments, stable=True)
+  token_index = order // top_k
+  group_sizes = jnp.bincount(assignments, length=num_experts).astype(jnp.int32)
+  sorted_tokens = flat[token_index]
+  experts = params.experts
+  hidden = jax.nn.silu(jax.lax.ragged_dot(sorted_tokens, experts.w1, group_sizes))
+  hidden *= jax.lax.ragged_dot(sorted_tokens, experts.w2, group_sizes)
+  outputs = jax.lax.ragged_dot(hidden, experts.w3, group_sizes)
+  gated = outputs * weights.reshape(-1)[order][:, None]
+  routed = jnp.zeros(flat.shape, gated.dtype).at[token_index].add(gated).astype(outputs.dtype)
   output = routed.reshape(tokens.shape) + swiglu_block(params.shared, tokens)
   if not return_aux:
     return output

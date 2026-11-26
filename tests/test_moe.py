@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from clubfm.layers.moe import MoEConfig, MoEParams, init_topk_moe, moe_block, topk_moe_block
 from clubfm.modules.mlp import swiglu_block
@@ -54,25 +55,27 @@ def test_expert_parallel_exchange_matches_single_device():
   assert all(bool(jnp.all(jnp.isfinite(g))) for g in jax.tree.leaves(grads))
 
 
-def test_topk_swiglu_matches_dense_reference_and_gradients():
+@pytest.mark.parametrize("num_experts,top_k", [(4, 2), (8, 3)])
+def test_topk_swiglu_matches_dense_reference_and_gradients(num_experts, top_k):
   expert_key, token_key = jax.random.split(jax.random.key(9))
-  params = init_topk_moe(expert_key, 3, 4, 5, 6)
+  params = init_topk_moe(expert_key, 3, num_experts, 5, 6)
   tokens = jax.random.normal(token_key, (2, 3, 3))
 
   def reference(params, tokens, normalize):
     probabilities = jax.nn.softmax(tokens @ params.router, axis=-1)
-    ids = jnp.argsort(probabilities, axis=-1)[..., -2:]
-    selected = jax.nn.one_hot(ids, 4).sum(axis=-2)
+    ids = jnp.argsort(probabilities, axis=-1)[..., -top_k:]
+    selected = jax.nn.one_hot(ids, num_experts).sum(axis=-2)
     weights = selected * probabilities
     if normalize:
       weights = weights / weights.sum(axis=-1, keepdims=True)
     experts = jax.vmap(swiglu_block, in_axes=(0, None))(params.experts, tokens)
     output = jnp.einsum("ebtd,bte->btd", experts, weights) + swiglu_block(params.shared, tokens)
-    aux = 4 * jnp.sum((selected.mean(axis=(0, 1)) / 2) * probabilities.mean(axis=(0, 1)))
+    fractions = selected.mean(axis=(0, 1)) / top_k
+    aux = num_experts * jnp.sum(fractions * probabilities.mean(axis=(0, 1)))
     return output, aux
 
   for normalize in (False, True):
-    apply = jax.jit(lambda p, x: topk_moe_block(p, x, 2, normalize, return_aux=True))
+    apply = jax.jit(lambda p, x: topk_moe_block(p, x, top_k, normalize, return_aux=True))
     actual, actual_aux = apply(params, tokens)
     expected, expected_aux = reference(params, tokens, normalize)
     np.testing.assert_allclose(actual, expected, atol=1e-6)
@@ -87,7 +90,8 @@ def test_topk_swiglu_matches_dense_reference_and_gradients():
       params
     )
     for actual, expected in zip(jax.tree.leaves(actual_grad), jax.tree.leaves(expected_grad)):
-      np.testing.assert_allclose(actual, expected, atol=1e-6)
+      # Grouped matmuls sum in a different order, so allow float32 rounding differences.
+      np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
 def test_bfloat16_router_preserves_small_logit_differences():
