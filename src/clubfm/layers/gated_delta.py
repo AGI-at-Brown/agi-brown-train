@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import struct
 
 from clubfm.modules.normalization import rmsnorm
-from clubfm.ops.gated_delta import gated_delta_scan
+from clubfm.ops.gated_delta import gated_delta_chunkwise_parallel_scan, gated_delta_scan
 
 
 @struct.dataclass
@@ -55,7 +55,7 @@ def _l2_normalize(x):
   return x * jax.lax.rsqrt(jnp.maximum(squared_norm, 1e-12))
 
 
-def gated_delta_block(params: GatedDeltaParams, tokens: jax.Array) -> jax.Array:
+def gated_delta_block(params: GatedDeltaParams, tokens: jax.Array, *, chunk_size=0) -> jax.Array:
   """Mix normalized hidden states of shape [batch, time, model_dim].
 
   The state starts at zero for each sequence. Consecutive groups of value
@@ -88,7 +88,12 @@ def gated_delta_block(params: GatedDeltaParams, tokens: jax.Array) -> jax.Array:
   decay = jnp.exp(-decay_rate * jax.nn.softplus(decay_logits + params.decay_bias))
 
   # Run the gated delta recurrence producing a representation of the input tokens.
-  mixed = gated_delta_scan(q, k, v.astype(state_dtype), decay.astype(state_dtype), write)
+  values = v.astype(state_dtype)
+  decay = decay.astype(state_dtype)
+  if chunk_size:
+    mixed = gated_delta_chunkwise_parallel_scan(q, k, values, decay, write, chunk_size=chunk_size)
+  else:
+    mixed = gated_delta_scan(q, k, values, decay, write)
 
   # Gate the normalized scan output before projecting back to the model width.
   gate_logits = jnp.einsum("btd,dhv->bthv", tokens, params.w_gate).astype(state_dtype)

@@ -38,6 +38,8 @@ class Config:
   linear_key_head_dim: int = 128
   linear_value_head_dim: int = 128
   linear_conv_kernel_dim: int = 4
+  # Tokens per chunk in the chunkwise-parallel gated-delta scan; 0 runs one token at a time.
+  gated_delta_chunk_size: int = struct.field(pytree_node=False, default=0)
   indexer_n_heads: int = 4
   indexer_head_dim: int = 128
   indexer_compress_ratio: int = struct.field(pytree_node=False, default=4)
@@ -172,7 +174,7 @@ def forward(params, tokens, cfg, *, return_router_aux=False):
       x = x + features @ params.ngram.projection
     normalized = rmsnorm(x, 1.0)
     if isinstance(layer.attn, GatedDeltaParams):
-      x = x + gated_delta_block(layer.attn, normalized)
+      x = x + gated_delta_block(layer.attn, normalized, chunk_size=cfg.gated_delta_chunk_size)
     else:
       x = x + sparse_attention_block(
         layer.attn,
