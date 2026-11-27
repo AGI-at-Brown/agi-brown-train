@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from clubfm.layers.gated_delta import GatedDeltaParams, gated_delta_block
-from clubfm.ops.gated_delta import gated_delta_scan
+from clubfm.ops.gated_delta import gated_delta_chunkwise_parallel_scan, gated_delta_scan
 
 
 def test_gated_delta_scan_matches_loop():
@@ -29,6 +29,35 @@ def test_gated_delta_scan_matches_loop():
 
   actual = jax.jit(gated_delta_scan)(q, k, v, decay, write)
   np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+
+def test_chunked_gated_delta_matches_sequential_outputs_and_gradients():
+  rng = np.random.default_rng(8)
+  q, k, v = [
+    jnp.asarray(rng.normal(scale=0.2, size=(2, 13, 3, width)), dtype=jnp.float32)
+    for width in (4, 4, 5)
+  ]
+  decay, write = [
+    jnp.asarray(rng.uniform(0.1, 0.9, size=q.shape[:-1]), dtype=jnp.float32)
+    for _ in range(2)
+  ]
+  decay = decay.at[0, 4].set(0)
+
+  def chunked(*inputs):
+    return gated_delta_chunkwise_parallel_scan(*inputs, chunk_size=4)
+
+  inputs = (q, k, v, decay, write)
+  expected = jax.jit(gated_delta_scan)(*inputs)
+  np.testing.assert_allclose(jax.jit(chunked)(*inputs), expected, atol=1e-6, rtol=1e-5)
+
+  def gradients(scan):
+    def loss(*args):
+      return jnp.square(scan(*args)).sum()
+
+    return jax.jit(jax.grad(loss, argnums=(0, 1, 2, 3, 4)))(*inputs)
+
+  for actual, expected_grad in zip(gradients(chunked), gradients(gated_delta_scan), strict=True):
+    np.testing.assert_allclose(actual, expected_grad, atol=1e-6, rtol=1e-5)
 
 
 def test_gated_delta_block_causality_shape_and_gradients():

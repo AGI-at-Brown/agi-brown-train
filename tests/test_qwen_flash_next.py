@@ -39,6 +39,17 @@ def _tiny_config():
   )
 
 
+def test_chunked_gated_delta_matches_token_by_token_forward():
+  # T=8 with chunk size 3 also covers the padding of a partial last chunk.
+  cfg = _tiny_config()
+  params = init_params(cfg, jax.random.key(5))
+  tokens = jax.random.randint(jax.random.key(6), (2, cfg.T), 0, cfg.V)
+  expected = jax.jit(lambda p, t: forward(p, t, cfg))(params, tokens)
+  chunked_cfg = cfg.replace(gated_delta_chunk_size=3)
+  actual = jax.jit(lambda p, t: forward(p, t, chunked_cfg))(params, tokens)
+  np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)
+
+
 def test_forward_uses_pre_norm_residual_layout():
   # Both mixers and feed-forwards read a normalized copy of the residual, which is only
   # normalized once more before the output projection. Renormalizing the residual after every
