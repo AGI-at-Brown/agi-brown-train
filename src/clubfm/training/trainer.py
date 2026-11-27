@@ -5,7 +5,9 @@ Basic transformer implementation.
 from __future__ import annotations
 
 import tomllib
-from itertools import batched
+from contextlib import closing
+from itertools import batched, islice
+from pathlib import Path
 from tempfile import TemporaryFile
 from typing import TYPE_CHECKING
 
@@ -16,6 +18,7 @@ from flax import struct
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from clubfm.data.transforms.packing import pack_batches
 from clubfm.models import qwen_flash_next, transformer
 from clubfm.modules.loss import cross_entropy
 from clubfm.training.distributed import (
@@ -176,6 +179,25 @@ def _tokenized_batches(train_cfg, lines):
 
 
 def get_dataset(train_cfg):
+  if Path(train_cfg.dataset_path).suffix.lower() == ".parquet":
+    from clubfm.data.sources.parquet import read_documents
+
+    eos = getattr(train_cfg.weight_cfg, "eos_token_id", None)
+    if train_cfg.tokenizer is None or eos is None or train_cfg.vocab_size > train_cfg.weight_cfg.V:
+      raise ValueError(
+        "Parquet training requires a tokenizer, an EOS token, and a matching model V"
+      )
+    with closing(read_documents(train_cfg.dataset_path)) as documents:
+      batches = pack_batches(
+        documents,
+        train_cfg.tokenizer,
+        batch_size=train_cfg.batch_size,
+        sequence_length=train_cfg.weight_cfg.T,
+        eos_token_id=eos,
+      )
+      yield from islice(batches, train_cfg.num_train_steps)
+    return
+
   with open(train_cfg.dataset_path) as f:
     if train_cfg.tokenizer is not None:
       yield from _tokenized_batches(train_cfg, (line.rstrip("\n") for line in f))
