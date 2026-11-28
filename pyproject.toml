@@ -21,12 +21,15 @@ dependencies = [
 [project.optional-dependencies]
 arc = ["arc-agi==0.9.9"]
 dev = ["pytest>=8", "ruff>=0.9"]
+# lm-evaluation-harness for experiments/models_130m/harness.py. 0.4.13 loads every default task
+# from data files; older releases need dataset scripts, which current `datasets` refuses to run.
+eval = ["lm-eval==0.4.13"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clubfm"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "experiments/models_130m"]
 pythonpath = ["."]
 markers = ["accelerator: requires compatible accelerator hardware"]
 
