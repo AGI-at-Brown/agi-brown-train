@@ -1,0 +1,50 @@
+# ~130M Qwen Flash Next (D=768, 8 layers, 4 experts top-2; ~128M parameters, ~38M of them in
+# the tied embedding). Both trained 130M models use this shape and load with this file:
+#   - FineWeb-Edu: 139k steps x 16 sequences x 1024 tokens (2.28B tokens) on 2x RTX A6000.
+#     Final validation loss 3.114; bits per byte 0.977 on FineWeb-Edu, 1.223 on WikiText-103.
+#   - Vintage (pre-1931 text: PG-19 + Shakespeare): same shape, steps and batch.
+# Those runs used lr 1e-3 with 1000 warmup steps and cosine decay to 10% of the peak; main's
+# trainer has a constant learning rate, so [training] lists only the keys it accepts.
+
+[architecture]
+name = "qwen_flash_next"
+
+[model]
+B = 8 # per-GPU batch size of the trained runs (2 GPUs)
+L = 8
+D = 768
+F = 3072
+N = 24
+K = 4
+H = 32
+V = 49152
+T = 1024 # training sequence length
+rope_theta = 10000.0
+eos_token_id = 0
+ngram_buckets_per_head = 0
+linear_num_key_heads = 12
+linear_num_value_heads = 24
+linear_key_head_dim = 32
+linear_value_head_dim = 32
+linear_conv_kernel_dim = 4
+gated_delta_chunk_size = 64
+indexer_n_heads = 4
+indexer_head_dim = 32
+indexer_compress_ratio = 4
+indexer_budget = 128
+rotary_dim = 32
+num_experts = 4
+num_experts_per_tok = 2
+moe_intermediate_size = 768
+shared_expert_intermediate_size = 768
+norm_topk_prob = true
+
+[training]
+epochs = 1
+lr = 0.001
+router_aux_loss_coef = 0.001
+num_train_steps = 139000
+dataset_path = ""
+
+[data]
+tokenizer = "HuggingFaceTB/cosmo2-tokenizer"

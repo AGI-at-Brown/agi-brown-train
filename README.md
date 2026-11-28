@@ -17,3 +17,8 @@ uv sync --extra dev
 The base dependency uses JAX's default installation. Install a compatible accelerator if needed.
 
 To test on ARC AGI 3, add your API key as `ARC_API_KEY` to .env in the root folder.
+
+## Trained models
+
+The 130M FineWeb-Edu and vintage (pre-1931) models, and the scripts to sample from and evaluate
+them, are in [experiments/models_130m](experiments/models_130m/README.md).
